@@ -153,6 +153,7 @@
   state.breakUntil=Math.max(0,+state.breakUntil||0);
   state.breakCooldownUntil=Math.max(0,+state.breakCooldownUntil||0);
   state.breakCreditMs=Math.max(0,+state.breakCreditMs||0);
+  state.breakSound=!!state.breakSound;
   state.selfStudy=state.selfStudy&&typeof state.selfStudy==='object'?state.selfStudy:{worked:0,awayMs:0,runningSince:null};
   state.selfStudy.totalWorked=Math.max(0,+(state.selfStudy.totalWorked??state.selfStudy.worked??0)||0);
   state.history=state.history&&typeof state.history==='object'?state.history:{};
@@ -169,6 +170,7 @@
   $('record-period').previousElementSibling.classList.add('hidden'); $('record-period').classList.add('hidden');
   const weeklyNavigation=document.createElement('div'); weeklyNavigation.className='weekly-navigation'; weeklyNavigation.innerHTML='<button id="previous-week" type="button" aria-label="前の週を見る">‹</button><strong id="weekly-range"></strong><button id="next-week" type="button" aria-label="次の週を見る">›</button>'; $('record-chart').before(weeklyNavigation);
   $('previous-week').onclick=()=>{weeklyOffset--;render();}; $('next-week').onclick=()=>{if(weeklyOffset<0){weeklyOffset++;render();}};
+  const breakSoundOption=document.createElement('label'); breakSoundOption.className='check-row'; breakSoundOption.innerHTML='<input id="break-sound" type="checkbox">休憩が終わったら音を鳴らす'; $('break-status').before(breakSoundOption); $('break-sound').checked=state.breakSound; $('break-sound').onchange=()=>{state.breakSound=$('break-sound').checked;save();};
   function nextWeeklyAt(weekday,time,from=Date.now()){const [hours,minutes]=(time||'00:00').split(':').map(Number),date=new Date(from);date.setHours(hours||0,minutes||0,0,0);let days=(Number(weekday)-date.getDay()+7)%7;if(days===0&&date.getTime()<=from)days=7;date.setDate(date.getDate()+days);return date.getTime();}
   const save=()=>localStorage.setItem(KEY,JSON.stringify(state));
   const active=()=>state.tasks.find(t=>t.id===state.activeId);
@@ -214,7 +216,10 @@
   function sessionRef(session){return session&&session.kind==='task'?{kind:'task',id:session.id}:{kind:'self'};}
   function resolveSession(ref){if(!ref)return null;if(ref.kind==='task'){const t=state.tasks.find(task=>task.id===ref.id);return t?{kind:'task',id:t.id,target:t}:null;}return {kind:'self',target:state.selfStudy};}
   function pauseSession(session,now=Date.now()){if(!session)return;if(session.kind==='task'){const t=session.target;if(t.runningSince){const ms=now-t.runningSince;t.worked+=ms;addTaskHistory(t,ms,now);t.runningSince=null;}}else pauseSelf(now);}
-  function finishBreak(now=Date.now()){if(!state.breakUntil)return;state.breakCreditMs=Math.max(0,state.breakUntil-now);state.breakUntil=0;if(state.breakCooldownUntil<=now)state.breakCooldownUntil=now+50*60000;}
+  let breakAudioContext=null;
+  function prepareBreakSound(){if(!state.breakSound)return;try{const AudioContext=window.AudioContext||window.webkitAudioContext;breakAudioContext=breakAudioContext||new AudioContext();if(breakAudioContext.state==='suspended')breakAudioContext.resume();}catch(error){}}
+  function playBreakSound(){if(!state.breakSound)return;try{prepareBreakSound();if(!breakAudioContext)return;[0,.32,.64].forEach(delay=>{const oscillator=breakAudioContext.createOscillator(),gain=breakAudioContext.createGain(),start=breakAudioContext.currentTime+delay;oscillator.type='sine';oscillator.frequency.value=880;gain.gain.setValueAtTime(.0001,start);gain.gain.exponentialRampToValueAtTime(.18,start+.02);gain.gain.exponentialRampToValueAtTime(.0001,start+.22);oscillator.connect(gain).connect(breakAudioContext.destination);oscillator.start(start);oscillator.stop(start+.24);});}catch(error){}}
+  function finishBreak(now=Date.now()){if(!state.breakUntil)return;const ended=now>=state.breakUntil;if(ended)playBreakSound();state.breakCreditMs=Math.max(0,state.breakUntil-now);state.breakUntil=0;if(state.breakCooldownUntil<=now)state.breakCooldownUntil=now+50*60000;}
   function endBreakForStudy(now=Date.now()){if(state.breakUntil>now)finishBreak(now);}
   function resumeSession(session,now=Date.now()){if(!session)return;endBreakForStudy(now);session.target.runningSince=now;}
   function confirmAndStop(session,action,onOk){if(!session){onOk();return;}const studyName=session.kind==='task'?'タスク学習':'自主学習';showActionConfirm(`${action}をすると、${studyName}の計測を止めます。続けますか？`,()=>{pauseSession(session);showWarning(`${action}のため、${studyName}の計測を止めました。`);save();onOk();});}
@@ -288,6 +293,7 @@
   function reminders(){const now=Date.now();processWeeklyRepeats(now);const t=active();if(awaySince){const intervals=[20*60000,10*60000,5*60000,150000,75000,37500,15000];const interval=intervals[Math.min(awayStep,intervals.length-1)];if(now-lastAwayAlert>=interval){notify('集中タスク','作業ページに戻りましょう。');lastAwayAlert=now;awayStep++;}}
     state.tasks.filter(x=>!x.done&&!x.runningSince).forEach(x=>{const alertAt=x.due-x.estimate*60000-(x.bufferDays??state.bufferDays??3)*86400000-(x.bufferHours??0)*3600000;if(now>=alertAt){const elapsed=now-alertAt;const intervals=[3600000,1800000,900000,450000,225000,112500,60000,30000,15000];const idx=Math.min(Math.floor(Math.log2(Math.max(1,elapsed/3600000+1))),intervals.length-1);const last=lastDeadlineAlert[x.id]||0;if(now-last>=intervals[idx]){notify('期限が近いタスク',`「${x.name}」を開始しましょう。`);lastDeadlineAlert[x.id]=now;}}});
     if(state.breakUntil&&now>=state.breakUntil){finishBreak(now);save();notify('休憩終了','休憩が終わりました。次の休憩は50分後に始められます。');}if(state.breakCooldownUntil&&now>=state.breakCooldownUntil){state.breakCooldownUntil=0;state.breakCreditMs=0;save();}render(); }
+  $('break-btn').addEventListener('click',prepareBreakSound);
   setInterval(reminders,1000); render();
 })();
 </script>
